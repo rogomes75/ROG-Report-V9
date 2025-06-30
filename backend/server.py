@@ -84,7 +84,7 @@ async def startup_event():
 
 async def initialize_default_data():
     """Create default data if database is empty"""
-    if not mongodb_available or not db:
+    if not mongodb_available or db is None:
         return
     
     try:

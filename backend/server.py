@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import FastAPI, HTTPException, APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -8,8 +9,10 @@ from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel, Field
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import jwt
+import hashlib
 
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
@@ -19,18 +22,41 @@ load_dotenv(ROOT_DIR / '.env')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# JWT Configuration
+SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-here')
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
 # Create the main app without a prefix
 app = FastAPI(title="ROG Pool Service API")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# Security
+security = HTTPBearer()
+
 # Global variables for MongoDB
 mongodb_available = False
 client = None
 db = None
 
-# Pydantic Models
+# Auth Models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    role: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+# Existing Models
 class Client(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -48,6 +74,38 @@ class ServiceReport(BaseModel):
     priority: str = "NORMAL"  # URGENT, SAME_WEEK, NEXT_WEEK, NORMAL
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+# Auth functions
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    return hash_password(password) == hashed_password
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+        
+        # Simple user validation (in real app, check database)
+        if username == "admin":
+            return UserResponse(id="1", username="admin", role="administrator")
+        else:
+            raise HTTPException(status_code=401, detail="User not found")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
 @app.on_event("startup")
 async def startup_event():
@@ -132,6 +190,37 @@ async def initialize_default_data():
     except Exception as e:
         logger.error(f"Error initializing default data: {e}")
 
+# Auth endpoints
+@api_router.post("/auth/login", response_model=TokenResponse)
+async def login(login_request: LoginRequest):
+    """Login endpoint - accepts admin/admin123"""
+    username = login_request.username
+    password = login_request.password
+    
+    # Simple hardcoded authentication (in real app, check database)
+    if username == "admin" and password == "admin123":
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": username}, expires_delta=access_token_expires
+        )
+        
+        user = UserResponse(id="1", username="admin", role="administrator")
+        
+        return TokenResponse(
+            access_token=access_token,
+            user=user
+        )
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
+
+@api_router.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: UserResponse = Depends(get_current_user)):
+    """Get current user information"""
+    return current_user
+
 @api_router.get("/")
 def root():
     return {
@@ -145,7 +234,8 @@ def root():
             "Service Reports", 
             "Photo Upload Support",
             "Status Tracking",
-            "Sample Data Included"
+            "Sample Data Included",
+            "Authentication System"
         ]
     }
 
@@ -162,7 +252,7 @@ def health():
 
 # Client endpoints
 @api_router.get("/clients", response_model=List[Client])
-async def get_clients():
+async def get_clients(current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         return []
     
@@ -174,7 +264,7 @@ async def get_clients():
         return []
 
 @api_router.post("/clients", response_model=Client)
-async def create_client(client: Client):
+async def create_client(client: Client, current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         raise HTTPException(status_code=503, detail="Database not available")
     
@@ -186,7 +276,7 @@ async def create_client(client: Client):
         raise HTTPException(status_code=500, detail=f"Error creating client: {e}")
 
 @api_router.get("/clients/{client_id}", response_model=Client)
-async def get_client(client_id: str):
+async def get_client(client_id: str, current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         raise HTTPException(status_code=503, detail="Database not available")
     
@@ -203,7 +293,7 @@ async def get_client(client_id: str):
 
 # Service Report endpoints
 @api_router.get("/reports", response_model=List[ServiceReport])
-async def get_reports():
+async def get_reports(current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         return []
     
@@ -215,7 +305,7 @@ async def get_reports():
         return []
 
 @api_router.post("/reports", response_model=ServiceReport)
-async def create_report(report: ServiceReport):
+async def create_report(report: ServiceReport, current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         raise HTTPException(status_code=503, detail="Database not available")
     
@@ -227,7 +317,7 @@ async def create_report(report: ServiceReport):
         raise HTTPException(status_code=500, detail=f"Error creating report: {e}")
 
 @api_router.get("/reports/{report_id}", response_model=ServiceReport)
-async def get_report(report_id: str):
+async def get_report(report_id: str, current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         raise HTTPException(status_code=503, detail="Database not available")
     
@@ -243,7 +333,7 @@ async def get_report(report_id: str):
         raise HTTPException(status_code=500, detail=f"Error fetching report: {e}")
 
 @api_router.put("/reports/{report_id}", response_model=ServiceReport)
-async def update_report(report_id: str, updated_report: ServiceReport):
+async def update_report(report_id: str, updated_report: ServiceReport, current_user: UserResponse = Depends(get_current_user)):
     if not mongodb_available:
         raise HTTPException(status_code=503, detail="Database not available")
     

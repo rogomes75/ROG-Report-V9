@@ -281,7 +281,7 @@ async def login(login_request: LoginRequest):
     password = login_request.password
     
     # Check if MongoDB is available
-    if mongodb_available and db:
+    if mongodb_available and db is not None:
         try:
             user = await db.users.find_one({"username": username})
             if user and verify_password(password, user["password_hash"]):

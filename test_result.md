@@ -102,7 +102,7 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "User wants to load and test the ROG Report V7 application from GitHub repo (https://github.com/rogomes75/ROG-Report-V7.git) in preview mode. This is a complete pool service management system with client management, service reports, PDF generation, and dashboard features."
+user_problem_statement: "User wants to clone and load the EXACT ROG Pool Service application from GitHub repo (https://github.com/rogomes75/ROG-Report-V9.git) with specific requirements: Frontend App.js must have 2850+ lines, backend server.py must have 640+ lines, 6 tabs (Services Reported, Services Completed, Clients Management, Users, Financial, Reports), and login credentials admin/admin123. All dependencies must be installed and services running correctly."
 
 backend:
   - task: "Pool Service API Backend"
